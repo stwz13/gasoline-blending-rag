@@ -1,15 +1,6 @@
-"""Нарезка корпуса АССБ на чанки.
+"""Нарезка корпуса АССБ на чанки с таблицами в отдельных чанках и метаданными.
 
-Документ режется по заголовкам Markdown (``#``/``##``/``###``), внутри раздела
-выделяются блоки по комментариям ``<!-- chunk: {...} -->``. Каждая таблица
-становится отдельным чанком вместе с подписью «Таблица N — ...»; длинная таблица
-делится по строкам с повтором шапки. Длинный текст дорезается рекурсивно:
-абзацы -> предложения, с перекрытием по предложениям.
-
-Запуск::
-
-    python -m src.chunking                    # вывод в data/chunks.jsonl
-    python -m src.chunking --max-chars 1500 --overlap 200
+Запуск: python -m src.chunking [--max-chars 1500] [--overlap 200]
 """
 
 from __future__ import annotations
@@ -27,8 +18,6 @@ ROOT = Path(__file__).resolve().parent.parent
 CORPUS_DIR = ROOT / "corpus"
 OUTPUT_DIR = ROOT / "data"
 
-# Параметры по умолчанию. 1500 знаков русского текста — около 400 токенов
-# для многоязычных энкодеров (e5, bge-m3), что укладывается в окно 512 токенов.
 MAX_CHARS = 1500
 MIN_CHARS = 300
 OVERLAP_CHARS = 200
@@ -40,7 +29,6 @@ MARKER_RE = re.compile(r"^<!--\s*chunk:\s*(\{.*\})\s*-->\s*$")
 CAPTION_RE = re.compile(r"^Таблица\s+\d+(\.\d+)*\s+—")
 SENTENCE_RE = re.compile(r"(?<=[.!?;])\s+(?=[А-ЯЁA-Z0-9«(])")
 
-# Марки бензина: каноническое имя -> шаблоны упоминаний в тексте.
 GRADE_PATTERNS = {
     "АИ-92": [r"АИ-92", r"Регуляр-92"],
     "АИ-95": [r"АИ-95", r"Премиум-95"],
@@ -56,6 +44,16 @@ GRADE_RES = {
 
 @dataclass
 class Chunk:
+    """Чанк корпуса с метаданными.
+
+    Attributes:
+        chunk_type: text или table.
+        block_type: тип блока из разметки: text, recipe, equipment, norm, procedure, component.
+        text: исходный фрагмент.
+        embed_text: фрагмент с контекстом «документ > раздел» и подписью таблицы для энкодера.
+        grades: марки бензина, упомянутые в чанке.
+    """
+
     chunk_id: str
     doc_id: int
     document: str
@@ -63,10 +61,10 @@ class Chunk:
     section: str
     subsection: str
     section_path: list[str]
-    chunk_type: str  # text | table
-    block_type: str  # тип из разметки: text, recipe, equipment, norm, procedure, component
-    text: str  # исходный фрагмент
-    embed_text: str  # фрагмент с контекстом (документ, раздел, подпись) — подаётся в энкодер
+    chunk_type: str
+    block_type: str
+    text: str
+    embed_text: str
     grades: list[str] = field(default_factory=list)
     category: list[str] = field(default_factory=list)
     method: list[str] = field(default_factory=list)
@@ -83,26 +81,37 @@ class Chunk:
 
 @dataclass
 class Block:
-    """Непрерывный фрагмент раздела: таблица либо текст под одной разметкой."""
+    """Фрагмент раздела: таблица или текст под одной разметкой.
 
-    kind: str  # text | table
+    Attributes:
+        kind: text или table.
+        marker: метаданные из комментария <!-- chunk -->.
+        before: короткий текст перед таблицей.
+        after: короткий текст после таблицы.
+    """
+
+    kind: str
     lines: list[str]
     marker: dict
     caption: str = ""
     heading_path: tuple[str, ...] = ()
-    before: str = ""  # короткий текст перед таблицей («приведены в таблице 4.2»)
-    after: str = ""  # короткий комментарий после таблицы
+    before: str = ""
+    after: str = ""
 
     @property
     def text(self) -> str:
         return "\n".join(self.lines).strip()
 
 
-# ---------------------------------------------------------------- разбор документа
-
-
 def parse_document(raw: str) -> tuple[dict, str]:
-    """Отделяет YAML-шапку от тела документа."""
+    """Отделяет YAML-шапку от тела документа.
+
+    Args:
+        raw: текст документа.
+
+    Returns:
+        Метаданные шапки и тело документа.
+    """
     match = FRONTMATTER_RE.match(raw)
     if not match:
         return {}, raw
@@ -110,7 +119,14 @@ def parse_document(raw: str) -> tuple[dict, str]:
 
 
 def split_blocks(body: str) -> list[Block]:
-    """Делит тело документа на блоки по заголовкам, разметке и таблицам."""
+    """Делит тело документа на блоки по заголовкам, разметке и таблицам.
+
+    Args:
+        body: тело документа без YAML-шапки.
+
+    Returns:
+        Блоки в порядке следования.
+    """
     blocks: list[Block] = []
     path: list[str] = []
     current: Block | None = None
@@ -158,7 +174,6 @@ def split_blocks(body: str) -> list[Block]:
             continue
 
         if current is not None and current.kind == "table":
-            # Пустая строка между подписью и таблицей не закрывает таблицу.
             if not line.strip() and not current.lines:
                 continue
             close()
@@ -175,9 +190,15 @@ def split_blocks(body: str) -> list[Block]:
 
 
 def attach_short_text(blocks: list[Block], min_chars: int = MIN_CHARS) -> list[Block]:
-    """Короткий текстовый блок без собственной разметки не становится отдельным чанком:
-    он присоединяется к следующему размеченному блоку того же раздела (таблице или
-    процедуре), иначе к предыдущему блоку раздела."""
+    """Присоединяет короткие неразмеченные тексты к соседнему блоку того же раздела.
+
+    Args:
+        blocks: блоки документа.
+        min_chars: порог длины короткого текста.
+
+    Returns:
+        Блоки без коротких текстовых фрагментов.
+    """
     result: list[Block] = []
     for i, block in enumerate(blocks):
         short = block.kind == "text" and not block.marker and len(block.text) < min_chars
@@ -200,12 +221,15 @@ def attach_short_text(blocks: list[Block], min_chars: int = MIN_CHARS) -> list[B
     return result
 
 
-# ---------------------------------------------------------------- нарезка текста
-
-
 def paragraphs(text: str) -> list[str]:
-    """Абзацы; вводная фраза с двоеточием склеивается со следующим абзацем, а пояснение
-    «где ...» — с предыдущим (формула не отрывается от расшифровки обозначений)."""
+    """Делит текст на абзацы, не отрывая вводную фразу и пояснение «где ...» от формулы или списка.
+
+    Args:
+        text: текст блока.
+
+    Returns:
+        Абзацы.
+    """
     parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     merged: list[str] = []
     for part in parts:
@@ -217,7 +241,15 @@ def paragraphs(text: str) -> list[str]:
 
 
 def split_long(unit: str, max_chars: int) -> list[str]:
-    """Делит слишком длинный абзац по строкам списка, затем по предложениям."""
+    """Делит длинный абзац по строкам списка, затем по предложениям.
+
+    Args:
+        unit: абзац.
+        max_chars: максимальная длина части.
+
+    Returns:
+        Части абзаца.
+    """
     if len(unit) <= max_chars:
         return [unit]
     pieces = unit.split("\n") if "\n" in unit else SENTENCE_RE.split(unit)
@@ -239,7 +271,15 @@ def split_long(unit: str, max_chars: int) -> list[str]:
 
 
 def tail_overlap(text: str, overlap: int) -> str:
-    """Последние предложения фрагмента общей длиной не больше ``overlap``."""
+    """Возвращает последние целые предложения фрагмента.
+
+    Args:
+        text: фрагмент.
+        overlap: максимальная длина перекрытия.
+
+    Returns:
+        Перекрытие для начала следующего чанка.
+    """
     if overlap <= 0:
         return ""
     sentences = SENTENCE_RE.split(text.replace("\n", " "))
@@ -253,7 +293,17 @@ def tail_overlap(text: str, overlap: int) -> str:
 
 
 def pack_text(text: str, max_chars: int, min_chars: int, overlap: int) -> list[str]:
-    """Рекурсивная упаковка абзацев в чанки не длиннее ``max_chars``."""
+    """Собирает абзацы в чанки с перекрытием по предложениям.
+
+    Args:
+        text: текст блока.
+        max_chars: максимальная длина чанка.
+        min_chars: короткий последний чанк присоединяется к предыдущему.
+        overlap: максимальная длина перекрытия.
+
+    Returns:
+        Тексты чанков.
+    """
     units = [u for p in paragraphs(text) for u in split_long(p, max_chars)]
     chunks: list[str] = []
     buf = ""
@@ -265,7 +315,6 @@ def pack_text(text: str, max_chars: int, min_chars: int, overlap: int) -> list[s
         else:
             buf = f"{buf}\n\n{unit}" if buf else unit
     if buf:
-        # Короткий хвост присоединяется к предыдущему чанку, если это не превысит лимит сильно.
         if chunks and len(buf) < min_chars and len(chunks[-1]) + len(buf) <= max_chars * 1.2:
             chunks[-1] = f"{chunks[-1]}\n\n{buf}"
         else:
@@ -274,7 +323,16 @@ def pack_text(text: str, max_chars: int, min_chars: int, overlap: int) -> list[s
 
 
 def split_table(lines: list[str], max_chars: int, row_per_chunk: bool = False) -> list[list[str]]:
-    """Делит таблицу по строкам; шапка (заголовок + разделитель) повторяется в каждой части."""
+    """Делит таблицу по строкам с повтором шапки в каждой части.
+
+    Args:
+        lines: строки таблицы Markdown.
+        max_chars: максимальная длина части.
+        row_per_chunk: по одной строке данных на часть.
+
+    Returns:
+        Части таблицы.
+    """
     header, rows = lines[:2], lines[2:]
     if row_per_chunk:
         return [header + [row] for row in rows]
@@ -294,10 +352,15 @@ def split_table(lines: list[str], max_chars: int, row_per_chunk: bool = False) -
     return parts
 
 
-# ---------------------------------------------------------------- метаданные
-
-
 def as_list(value) -> list[str]:
+    """Приводит значение поля разметки к списку строк.
+
+    Args:
+        value: строка, список или None.
+
+    Returns:
+        Список значений.
+    """
     if value is None or value == "":
         return []
     if isinstance(value, list):
@@ -306,15 +369,29 @@ def as_list(value) -> list[str]:
 
 
 def detect_grades(*texts: str) -> list[str]:
+    """Находит марки бензина с учётом торговых названий.
+
+    Args:
+        texts: тексты для поиска.
+
+    Returns:
+        Канонические названия марок.
+    """
     joined = " ".join(texts)
     return [grade for grade, regex in GRADE_RES.items() if regex.search(joined)]
 
 
 def context_header(meta: dict, path: tuple[str, ...]) -> str:
+    """Формирует строку контекста «документ > раздел > подраздел».
+
+    Args:
+        meta: метаданные документа.
+        path: путь заголовков блока.
+
+    Returns:
+        Строка контекста.
+    """
     return " > ".join([meta.get("title", "")] + [p for p in path[1:]])
-
-
-# ---------------------------------------------------------------- нарезка документа
 
 
 def chunk_document(
@@ -324,6 +401,18 @@ def chunk_document(
     overlap: int = OVERLAP_CHARS,
     max_table_chars: int = MAX_TABLE_CHARS,
 ) -> list[Chunk]:
+    """Режет документ на чанки.
+
+    Args:
+        raw: текст документа с YAML-шапкой.
+        max_chars: максимальная длина текстового чанка.
+        min_chars: порог короткого фрагмента.
+        overlap: максимальная длина перекрытия.
+        max_table_chars: длина, после которой таблица делится по строкам.
+
+    Returns:
+        Чанки документа.
+    """
     meta, body = parse_document(raw)
     chunks: list[Chunk] = []
     for block in attach_short_text(split_blocks(body), min_chars):
@@ -374,6 +463,17 @@ def chunk_document(
 def make_chunk(meta: dict, *, position: int, path: tuple[str, ...], chunk_type: str,
                block_type: str, text: str, embed_text: str, grades: list[str], marker: dict,
                caption: str = "", part: int = 1, parts_total: int = 1) -> Chunk:
+    """Создаёт чанк из фрагмента и метаданных документа и разметки.
+
+    Args:
+        meta: метаданные документа.
+        position: порядковый номер чанка в документе.
+        path: путь заголовков.
+        marker: метаданные из разметки <!-- chunk -->.
+
+    Returns:
+        Чанк.
+    """
     doc_id = int(meta.get("doc_id", 0))
     return Chunk(
         chunk_id=f"{doc_id:02d}-{position:03d}",
@@ -403,6 +503,15 @@ def make_chunk(meta: dict, *, position: int, path: tuple[str, ...], chunk_type: 
 
 
 def chunk_corpus(corpus_dir: Path = CORPUS_DIR, **params) -> list[Chunk]:
+    """Режет на чанки все документы корпуса.
+
+    Args:
+        corpus_dir: папка с документами.
+        params: параметры chunk_document.
+
+    Returns:
+        Чанки корпуса.
+    """
     chunks: list[Chunk] = []
     for path in sorted(corpus_dir.glob("[0-9][0-9]_*.md")):
         chunks.extend(chunk_document(path.read_text(encoding="utf-8"), **params))
@@ -410,6 +519,12 @@ def chunk_corpus(corpus_dir: Path = CORPUS_DIR, **params) -> list[Chunk]:
 
 
 def save_jsonl(chunks: list[Chunk], path: Path) -> None:
+    """Сохраняет чанки в JSONL, по одному на строку.
+
+    Args:
+        chunks: чанки.
+        path: путь к файлу.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for chunk in chunks:
@@ -417,6 +532,14 @@ def save_jsonl(chunks: list[Chunk], path: Path) -> None:
 
 
 def stats(chunks: list[Chunk]) -> dict:
+    """Считает статистику нарезки.
+
+    Args:
+        chunks: чанки.
+
+    Returns:
+        Число чанков по типам и документам, размеры в знаках.
+    """
     sizes = sorted(c.char_count for c in chunks)
     by_type = Counter(c.chunk_type for c in chunks)
     return {
