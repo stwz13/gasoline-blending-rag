@@ -8,8 +8,10 @@ from functools import lru_cache
 from pathlib import Path
 
 import faiss
+import nltk
 import numpy as np
 import pymorphy3
+from nltk.corpus import stopwords
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 
@@ -25,21 +27,29 @@ ENCODERS = {
     "rubert-tiny2": "cointegrated/rubert-tiny2",
 }
 
-STOPWORDS = set(
-    """и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по только ее мне
-    было вот от меня еще нет о из ему теперь когда даже ну вдруг ли если уже или ни быть был него до вас
-    нибудь опять уж вам ведь там потом себя ничего ей может они тут где есть надо ней для мы тебя их чем
-    была сам чтоб без будто чего раз тоже себе под будет ж тогда кто этот того потому этого какой совсем
-    ним здесь этом один почти мой тем чтобы нее сейчас были куда зачем всех никогда можно при наконец
-    два об другой хоть после над больше тот через эти нас про всего них какая много разве три эту моя
-    впрочем хорошо свою этой перед иногда лучше чуть том нельзя такой им более всегда конечно всю между
-    это каков какова каковы который которая которые""".split()
-)
-
 TOKEN_RE = re.compile(r"[0-9a-zа-я]+")
 GLOSSARY_ROW_RE = re.compile(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$")
 
 MORPH = pymorphy3.MorphAnalyzer()
+
+
+def load_stopwords() -> set[str]:
+    """Загружает список стоп-слов русского языка из NLTK.
+
+    При первом запуске список скачивается командой nltk.download("stopwords").
+
+    Returns:
+        Стоп-слова в нижнем регистре, «ё» заменена на «е».
+    """
+    try:
+        words = stopwords.words("russian")
+    except LookupError:
+        nltk.download("stopwords", quiet=True)
+        words = stopwords.words("russian")
+    return {word.replace("ё", "е") for word in words}
+
+
+STOPWORDS = load_stopwords()
 
 
 def load_chunks(path: Path = CHUNKS_PATH) -> list[dict]:
@@ -331,8 +341,9 @@ class TransformerEncoder:
         return np.asarray(vectors, dtype="float32")
 
 
+@lru_cache(maxsize=None)
 def make_encoder(name: str) -> TransformerEncoder:
-    """Создаёт энкодер по короткому имени.
+    """Создаёт энкодер по короткому имени; повторный вызов в том же запуске возвращает уже загруженный.
 
     Args:
         name: e5, rubert-tiny2 или полное имя модели HuggingFace.

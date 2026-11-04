@@ -6,3 +6,4 @@ indexes/
 *.faiss
 .env
 .idea/
+data/index/
