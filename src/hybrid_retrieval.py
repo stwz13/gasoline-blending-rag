@@ -115,7 +115,8 @@ class RerankedRetriever(Retriever):
     """Переранжирование выдачи кросс-энкодером.
 
     Базовый поиск отбирает depth кандидатов, кросс-энкодер оценивает пары «запрос — чанк»
-    и ставит кандидатов выше остальных чанков в порядке своих оценок.
+    и ставит кандидатов выше остальных чанков в порядке своих оценок. Оценки кандидатов
+    не нормируются, чтобы по оценке лучшего чанка можно было сравнивать разные запросы.
     """
 
     def __init__(self, base: Retriever, model: CrossEncoder, depth: int = RERANK_DEPTH,
@@ -142,8 +143,8 @@ class RerankedRetriever(Retriever):
             predicted = self.model.predict([(query, self.chunks[i]["text"]) for i in missing])
             self.cache.update({(query, i): float(score) for i, score in zip(missing, predicted)})
         pair_scores = np.array([self.cache[(query, i)] for i in candidates])
-        scores = minmax(base_scores) - 2.0
-        scores[candidates] = minmax(pair_scores)
+        scores = pair_scores.min() - 2.0 + minmax(base_scores)
+        scores[candidates] = pair_scores
         return scores
 
 
