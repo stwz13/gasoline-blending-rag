@@ -7,3 +7,5 @@ indexes/
 .env
 .idea/
 data/index/
+data/eval_results.*
+data/chunk_quality.md
