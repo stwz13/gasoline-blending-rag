@@ -14,11 +14,11 @@ from src.hybrid_retrieval import build_hybrid
 from src.retrieval import Hit, Retriever
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL = "qwen2.5:7b"
+DEFAULT_MODEL = "hf.co/yandex/YandexGPT-5-Lite-8B-instruct-GGUF"
 DEFAULT_K = 5
 NOT_FOUND = "Информация не найдена в регламенте."
 
-SYSTEM_PROMPT = f"""Ты — помощник технолога автоматизированной станции смешения бензинов (АССБ).
+INSTRUCTIONS = f"""Ты — помощник технолога автоматизированной станции смешения бензинов (АССБ).
 Отвечай на вопрос только по фрагментам регламента, приведённым ниже.
 Вопрос может быть сформулирован другими словами, чем текст регламента: ищи фрагменты, близкие по смыслу.
 Не добавляй факты, которых нет во фрагментах, даже если знаешь их из общих знаний.
@@ -73,17 +73,20 @@ def build_context(hits: list[Hit]) -> str:
 
 
 def build_messages(question: str, hits: list[Hit]) -> list[dict]:
-    """Собирает сообщения для чат-модели.
+    """Собирает сообщение для чат-модели.
+
+    Инструкции передаются в начале сообщения пользователя, а не отдельным системным сообщением:
+    шаблон чата YandexGPT 5 Lite в Ollama отбрасывает роль system, и модель их не видит.
 
     Args:
         question: вопрос пользователя.
         hits: найденные фрагменты.
 
     Returns:
-        Список сообщений с ролями system и user.
+        Список из одного сообщения с ролью user: инструкции, фрагменты и вопрос.
     """
-    user = f"Фрагменты регламента:\n\n{build_context(hits)}\n\nВопрос: {question}"
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+    user = f"{INSTRUCTIONS}\n\nФрагменты регламента:\n\n{build_context(hits)}\n\nВопрос: {question}"
+    return [{"role": "user", "content": user}]
 
 
 def ask_ollama(messages: list[dict], model: str = DEFAULT_MODEL, num_ctx: int = 8192,
