@@ -1,10 +1,12 @@
 """Генерация ответа локальной LLM по найденным фрагментам регламента.
 
 Модель запускается через Ollama (https://ollama.com): сервер Ollama должен быть запущен,
-а модель скачана командой `ollama pull <модель>`.
+а модель скачана командой `ollama pull <модель>`. Адрес сервера Ollama задаётся
+переменной окружения OLLAMA_BASE_URL, по умолчанию http://localhost:11434.
 """
 
 import argparse
+import os
 import time
 from dataclasses import dataclass
 
@@ -13,7 +15,8 @@ import requests
 from src.hybrid_retrieval import build_hybrid
 from src.retrieval import Hit, Retriever
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/chat"
 DEFAULT_MODEL = "hf.co/yandex/YandexGPT-5-Lite-8B-instruct-GGUF"
 DEFAULT_K = 5
 NOT_FOUND = "Информация не найдена в регламенте."
