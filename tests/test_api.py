@@ -1,5 +1,7 @@
 """Проверки HTTP API RAG-сервиса без настоящего поиска и модели."""
 
+import asyncio
+
 import pytest
 import requests
 from fastapi.testclient import TestClient
@@ -70,3 +72,34 @@ def test_health_without_ollama(client, monkeypatch):
 
     monkeypatch.setattr(api.requests, "get", down)
     assert client.get("/health").json() == {"ollama": False, "model": api.MODEL, "model_ready": False}
+
+
+def test_stream_disconnect_closes_ollama_and_releases_lock(monkeypatch):
+    async def check():
+        waiting = asyncio.Event()
+        closed = asyncio.Event()
+
+        async def fake_stream(*args):
+            try:
+                yield "Часть ответа"
+                waiting.set()
+                await asyncio.Future()
+            finally:
+                closed.set()
+
+        async def receive():
+            await waiting.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            pass
+
+        monkeypatch.setattr(api, "configured_retriever", FakeRetriever)
+        monkeypatch.setattr(api, "stream_ollama", fake_stream)
+        async with api.lifespan(api.app):
+            response = api.ask_stream(api.Question(question="вопрос"))
+            await asyncio.wait_for(response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send), 2)
+            assert closed.is_set()
+            assert not api.state["lock"].locked()
+
+    asyncio.run(check())
