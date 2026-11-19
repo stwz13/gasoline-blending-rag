@@ -1,0 +1,45 @@
+[retrieval]
+# bm25, dense, rrf or weighted
+method = "rrf"
+encoder = "e5"
+bm25_field = "text"
+rerank = true
+rerank_depth = 20
+rrf_k = 60
+alpha = 0.6
+default_k = 5
+max_k = 10
+
+[ollama]
+base_url = "http://localhost:11434"
+model = "hf.co/yandex/YandexGPT-5-Lite-8B-instruct-GGUF"
+temperature = 0
+num_ctx = 8192
+large_num_ctx = 16384
+timeout = 900
+
+[api]
+host = "127.0.0.1"
+port = 8000
+
+[chat]
+api_url = "http://localhost:8000"
+host = "127.0.0.1"
+port = 7860
+share = false
+timeout = 900
+animation_interval = 0.4
+
+[profiles.local.retrieval]
+method = "bm25"
+bm25_field = "embed_text"
+rerank = false
+default_k = 3
+max_k = 3
+
+[profiles.local.ollama]
+num_ctx = 3072
+large_num_ctx = 3072
+num_thread = 3
+num_predict = 192
+keep_alive = 0

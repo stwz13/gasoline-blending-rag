@@ -1,10 +1,15 @@
 """Гибридный поиск: объединение BM25 и векторного поиска."""
 
+from __future__ import annotations
+
 import argparse
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 import numpy as np
-from sentence_transformers import CrossEncoder
+
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder
 
 from src.retrieval import (
     AbbreviationExpander,
@@ -158,11 +163,14 @@ def make_reranker(model_name: str = RERANKER) -> CrossEncoder:
     Returns:
         Кросс-энкодер.
     """
+    from sentence_transformers import CrossEncoder
+
     return CrossEncoder(model_name)
 
 
 def build_hybrid(method: str = "rrf", encoder_name: str = "e5", alpha: float = DEFAULT_ALPHA,
-                 rrf_k: int = RRF_K, rerank: bool = False) -> Retriever:
+                 rrf_k: int = RRF_K, rerank: bool = False, *, bm25_field: str = "text",
+                 rerank_depth: int = RERANK_DEPTH) -> Retriever:
     """Создаёт гибридный поиск по data/chunks.jsonl.
 
     Args:
@@ -171,16 +179,18 @@ def build_hybrid(method: str = "rrf", encoder_name: str = "e5", alpha: float = D
         alpha: вес векторного поиска во взвешенной сумме.
         rrf_k: сглаживающая константа RRF.
         rerank: переранжировать ли выдачу кросс-энкодером.
+        bm25_field: поле для полнотекстового индекса.
+        rerank_depth: число кандидатов для переранжирования.
 
     Returns:
         Гибридный поиск с раскрытием сокращений.
     """
     chunks = load_chunks()
     expander = AbbreviationExpander(load_glossary(chunks))
-    sparse = BM25Retriever(chunks, expander)
+    sparse = BM25Retriever(chunks, expander, field=bm25_field)
     dense = dense_retriever(chunks, encoder_name, expander)
     hybrid = HybridRetriever(sparse, dense, method, alpha, rrf_k)
-    return RerankedRetriever(hybrid, make_reranker()) if rerank else hybrid
+    return RerankedRetriever(hybrid, make_reranker(), depth=rerank_depth) if rerank else hybrid
 
 
 def main() -> None:

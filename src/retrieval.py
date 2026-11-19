@@ -13,7 +13,6 @@ import numpy as np
 import pymorphy3
 from nltk.corpus import stopwords
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -321,6 +320,8 @@ class TransformerEncoder:
         Args:
             model_name: имя модели на HuggingFace.
         """
+        from sentence_transformers import SentenceTransformer
+
         self.model_name = model_name
         self.model = SentenceTransformer(model_name)
         self.uses_prefixes = "e5" in model_name.lower()
@@ -459,15 +460,15 @@ def dense_retriever(chunks: list[dict], encoder_name: str, expander: Abbreviatio
     return retriever
 
 
-@lru_cache(maxsize=1)
-def default_bm25() -> BM25Retriever:
-    """Создаёт BM25 по data/chunks.jsonl один раз за сеанс.
+@lru_cache(maxsize=2)
+def default_bm25(field: str = "text") -> BM25Retriever:
+    """Создаёт BM25 по выбранному полю data/chunks.jsonl один раз за сеанс.
 
     Returns:
         BM25 с раскрытием сокращений.
     """
     chunks = load_chunks()
-    return BM25Retriever(chunks, AbbreviationExpander(load_glossary(chunks)))
+    return BM25Retriever(chunks, AbbreviationExpander(load_glossary(chunks)), field=field)
 
 
 def search(query: str, k: int = 5, filters: Filters | None = None, expand: bool = False) -> list[Hit]:

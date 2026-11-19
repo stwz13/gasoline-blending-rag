@@ -6,19 +6,22 @@
 """
 
 import argparse
-import os
+import json
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import httpx
 import requests
 
 from src.hybrid_retrieval import build_hybrid
 from src.retrieval import Hit, Retriever
+from src.settings import settings
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_BASE_URL = settings.ollama.base_url.rstrip("/")
 OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/chat"
-DEFAULT_MODEL = "hf.co/yandex/YandexGPT-5-Lite-8B-instruct-GGUF"
-DEFAULT_K = 5
+DEFAULT_MODEL = settings.ollama.model
+DEFAULT_K = settings.retrieval.default_k
 NOT_FOUND = "Информация не найдена в регламенте."
 
 INSTRUCTIONS = f"""Ты — помощник технолога автоматизированной станции смешения бензинов (АССБ).
@@ -92,8 +95,8 @@ def build_messages(question: str, hits: list[Hit]) -> list[dict]:
     return [{"role": "user", "content": user}]
 
 
-def ask_ollama(messages: list[dict], model: str = DEFAULT_MODEL, num_ctx: int = 8192,
-               url: str = OLLAMA_URL, timeout: float = 900) -> str:
+def ask_ollama(messages: list[dict], model: str = DEFAULT_MODEL, num_ctx: int = settings.ollama.num_ctx,
+               url: str = OLLAMA_URL, timeout: float = settings.ollama.timeout) -> str:
     """Отправляет сообщения локальной модели через Ollama.
 
     Args:
@@ -109,19 +112,55 @@ def ask_ollama(messages: list[dict], model: str = DEFAULT_MODEL, num_ctx: int = 
     Raises:
         requests.HTTPError: Ollama вернула ошибку, например модель не скачана.
     """
+    with ollama_request(messages, model, num_ctx, url, timeout, stream=False) as response:
+        response.raise_for_status()
+        return response.json()["message"]["content"].strip()
+
+
+def ollama_request(messages: list[dict], model: str, num_ctx: int, url: str,
+                   timeout: float, *, stream: bool) -> requests.Response:
+    payload = ollama_payload(messages, model, num_ctx, stream=stream)
+    return requests.post(url, timeout=timeout, stream=stream, json=payload)
+
+
+def ollama_payload(messages: list[dict], model: str, num_ctx: int, *, stream: bool) -> dict:
     payload = {
         "model": model,
         "messages": messages,
-        "stream": False,
-        "options": {"temperature": 0, "num_ctx": num_ctx},
+        "stream": stream,
+        "options": {"temperature": settings.ollama.temperature, "num_ctx": num_ctx},
     }
-    response = requests.post(url, json=payload, timeout=timeout)
-    response.raise_for_status()
-    return response.json()["message"]["content"].strip()
+    if settings.ollama.num_thread is not None:
+        payload["options"]["num_thread"] = settings.ollama.num_thread
+    if settings.ollama.num_predict is not None:
+        payload["options"]["num_predict"] = settings.ollama.num_predict
+    if settings.ollama.keep_alive is not None:
+        payload["keep_alive"] = settings.ollama.keep_alive
+    return payload
+
+
+async def stream_ollama(messages: list[dict], model: str, num_ctx: int,
+                        url: str = OLLAMA_URL, timeout: float = settings.ollama.timeout) -> AsyncIterator[str]:
+    payload = ollama_payload(messages, model, num_ctx, stream=True)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async with client.stream("POST", url, json=payload) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                event = json.loads(line)
+                if event.get("error"):
+                    raise httpx.RequestError(event["error"])
+                content = event.get("message", {}).get("content")
+                if content:
+                    yield content
+                if event.get("done"):
+                    return
+    raise httpx.RequestError("Ollama завершила поток без финального события")
 
 
 def answer(question: str, retriever: Retriever, model: str = DEFAULT_MODEL, k: int = DEFAULT_K,
-           num_ctx: int = 8192) -> Answer:
+           num_ctx: int = settings.ollama.num_ctx) -> Answer:
     """Находит фрагменты и генерирует ответ со ссылками на них.
 
     Args:

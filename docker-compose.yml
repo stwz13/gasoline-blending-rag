@@ -2,12 +2,14 @@
 # Запуск: docker compose up -d --build
 # Модель скачивается один раз: docker compose exec ollama ollama pull hf.co/yandex/YandexGPT-5-Lite-8B-instruct-GGUF
 # Чат: http://localhost:7860, API: http://localhost:8000/docs
+# Наружу открыт только чат; Ollama и RAG-сервис доступны лишь с самой машины.
 
 services:
   ollama:
     image: ollama/ollama
+    restart: unless-stopped
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama:/root/.ollama
     # Если есть видеокарта NVIDIA и установлен NVIDIA Container Toolkit, раскомментируйте:
@@ -24,8 +26,12 @@ services:
     command: uvicorn src.api:app --host 0.0.0.0 --port 8000
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
+      RAG_PROFILE: "${RAG_PROFILE:-default}"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       - ollama
 
@@ -34,6 +40,11 @@ services:
     command: python app/chat.py --host 0.0.0.0 --port 7860
     environment:
       RAG_API_URL: http://rag-api:8000
+      RAG_PROFILE: "${RAG_PROFILE:-default}"
+      GRADIO_SHARE: "${GRADIO_SHARE:-False}"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+    restart: unless-stopped
     ports:
       - "7860:7860"
     depends_on:

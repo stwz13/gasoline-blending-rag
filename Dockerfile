@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
 COPY app ./app
+COPY config.toml .
 COPY data/chunks.jsonl ./data/chunks.jsonl
 
 # Стоп-слова, реранкер и векторный индекс готовятся при сборке, чтобы сервис запускался быстро и без интернета
