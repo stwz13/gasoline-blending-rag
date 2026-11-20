@@ -178,8 +178,8 @@ async def get_answer(history: list[dict], generation: Generation | None) -> Asyn
 
 def build_ui() -> gr.Blocks:
     """Собирает интерфейс: чат слева, источники и настройки справа."""
-    with gr.Blocks(title="Регламент АССБ") as demo:
-        gr.Markdown("# Помощник технолога АССБ\n"
+    with gr.Blocks(title="Чат по регламенту АССБ") as demo:
+        gr.Markdown("# Чат по регламенту АССБ\n"
                     "Ответы по технологическому регламенту станции смешения бензинов. Модель отвечает только "
                     "по найденным фрагментам регламента и ставит ссылки на них вида [1].")
         status = gr.Markdown()
