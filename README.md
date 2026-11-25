@@ -29,7 +29,8 @@
 ├── config.toml             настройки поиска, Ollama, API и чата
 ├── notebooks/
 │   ├── parameter_tuning.ipynb  подбор параметров: графики, таблицы, выводы
-│   └── generation.ipynb        выбор генеративной модели и типичные ошибки
+│   ├── generation.ipynb        выбор генеративной модели и типичные ошибки
+│   └── configuration_test.ipynb  проверка выбранной конфигурации на 10 новых вопросах из data/test_queries.jsonl
 ├── tests/                  тесты генерации и API
 ├── Dockerfile
 ├── docker-compose.yml      запуск всех сервисов одной командой
